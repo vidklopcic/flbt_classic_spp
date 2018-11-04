@@ -13,11 +13,15 @@ class MyApp extends StatefulWidget {
 
 class _MyAppState extends State<MyApp> {
   String _platformVersion = 'Unknown';
+  FlbtClassicSpp flbt = FlbtClassicSpp.instance;
 
   @override
   void initState() {
     super.initState();
     initPlatformState();
+    flbt.init().then((_) {
+      print("success!");
+    });
   }
 
   // Platform messages are asynchronous, so we initialize in an async method.
@@ -47,10 +51,12 @@ class _MyAppState extends State<MyApp> {
         appBar: new AppBar(
           title: const Text('Plugin example app'),
         ),
-        body: new Center(
-          child: new Text('Running on: $_platformVersion\n'),
-        ),
+        body: new Column(children: [
+          new Text('Running on: $_platformVersion\n'),
+          new Text('Initialized: ${flbt.init()}')
+        ]),
       ),
     );
   }
+
 }
