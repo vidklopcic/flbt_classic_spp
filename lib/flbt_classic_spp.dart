@@ -52,7 +52,6 @@ class FlbtClassicSpp {
   // instance
   FlbtClassicSpp._() {
     _channel.setMethodCallHandler(_flbtMethodHandler);
-    dataStream.receiveBroadcastStream().listen(_onBtData);
   }
 
   static FlbtClassicSpp _instance = FlbtClassicSpp._();
@@ -71,9 +70,10 @@ class FlbtClassicSpp {
   }
 
   Future<bool> init() async {
-    await _channel.invokeMethod("init");
     _awaitingInit = new Completer();
+    _channel.invokeMethod("init");
     final bool success = await _awaitingInit.future;
+    dataStream.receiveBroadcastStream().listen(_onBtData);
     return success;
   }
 
@@ -87,14 +87,14 @@ class FlbtClassicSpp {
   }
 
   Future<FlbtDevice> connectByName(String name,
-      {Duration timeout = const Duration(seconds: 5)}) async {
+      {Duration timeout = const Duration(seconds: 30)}) async {
     if (_devices[name]?.connState == FlbtConnectionState.connected ?? false)
       return _devices[name];
     return await _connect(name, null, timeout);
   }
 
   Future<FlbtDevice> connectByUuid(String uuid,
-      {Duration timeout = const Duration(seconds: 5)}) async {
+      {Duration timeout = const Duration(seconds: 30)}) async {
     if (_devices[uuid]?.connState == FlbtConnectionState.connected ?? false)
       return _devices[uuid];
     return await _connect(null, uuid, timeout);
@@ -118,7 +118,8 @@ class FlbtClassicSpp {
       case 'connected':
         String identifier = methodCall.arguments['identifier'];
         if (identifier == null) return null;
-        FlbtDevice device = FlbtDevice.fromMap(methodCall.arguments);
+        final Map<String, dynamic> args = (methodCall.arguments as Map<dynamic, dynamic>).cast<String, dynamic>();
+        FlbtDevice device = FlbtDevice.fromMap(args);
         device.connState = FlbtConnectionState.connected;
         _devices[identifier] = device;
         Completer completer = _awaitingConnect[identifier];
@@ -139,7 +140,8 @@ class FlbtClassicSpp {
     }
   }
 
-  void _onBtData(List args) {
+  void _onBtData(dynamic arguments) {
+    List args = arguments;
     FlbtDevice device = _devices[args[0]];
     if (device == null) print("device ${args[0]} not found!");
     if (device.onData == null) return;

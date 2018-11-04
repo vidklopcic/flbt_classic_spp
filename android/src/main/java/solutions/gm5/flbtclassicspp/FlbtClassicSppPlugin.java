@@ -10,11 +10,9 @@ import android.support.v4.content.PermissionChecker;
 import android.util.Log;
 
 import java.io.BufferedOutputStream;
-import java.io.BufferedReader;
-import java.io.BufferedWriter;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.io.OutputStreamWriter;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Set;
@@ -44,16 +42,18 @@ public class FlbtClassicSppPlugin implements MethodCallHandler, PluginRegistry.R
     private class BtEntry {
         BluetoothDevice device;
         BluetoothSocket btSocket;
-        InputStreamReader reader;
+        InputStream reader;
         BufferedOutputStream writer;
         Thread thread;
+        String identifier;
 
-        BtEntry(BluetoothDevice d, BluetoothSocket bs, BufferedOutputStream writer, InputStreamReader reader, Thread thread) {
+        BtEntry(BluetoothDevice d, BluetoothSocket bs, BufferedOutputStream writer, InputStream reader, String identifier, Thread thread) {
             device = d;
             btSocket = bs;
             this.reader = reader;
             this.writer = writer;
             this.thread = thread;
+            this.identifier = identifier;
         }
     }
 
@@ -92,6 +92,7 @@ public class FlbtClassicSppPlugin implements MethodCallHandler, PluginRegistry.R
                 byte[] data = call.argument("payload");
                 try {
                     btEntry.writer.write(data);
+                    btEntry.writer.flush();
                 } catch (IOException e) {
                     result.error("WriteException", "Could not write data: " + e.toString(), null);
                     break;
@@ -104,7 +105,7 @@ public class FlbtClassicSppPlugin implements MethodCallHandler, PluginRegistry.R
         }
     }
 
-    private void connectBt(Result result, String name, String uuid) {
+    private void connectBt(final Result result, final String name, final String uuid) {
         if (bluetoothAdapter == null) {
             result.error("NoBluetoothAdapter", "Did you call init?", null);
             return;
@@ -121,37 +122,51 @@ public class FlbtClassicSppPlugin implements MethodCallHandler, PluginRegistry.R
             return;
         }
 
-        BluetoothSocket btSocket;
-        try {
-            btSocket = device.createRfcommSocketToServiceRecord(sppUuid);
-        } catch (IOException ex) {
-            result.error("CreateBtSocketException", "Failed to create RfComm socket: " + ex.toString(), null);
-            return;
-        }
-        for (int i = 0; ; i++) {
-            try {
-                btSocket.connect();
-            } catch (IOException ex) {
-                if (i < 5) {
-                    Log.d("FlbtClassicSppPlugin", "Failed to connect. Retrying.");
-                    continue;
-                }
-                result.error("ConnectException", "Failed to connect: " + ex.toString(), null);
-                return;
-            }
-            break;
-        }
 
-        BufferedOutputStream writer;
-        InputStreamReader reader;
-        try {
-            writer = new BufferedOutputStream(btSocket.getOutputStream());
-            reader = new InputStreamReader(btSocket.getInputStream());
-        } catch (IOException ex) {
-            result.error("ConnectException", "Failed to get input / output stream: " + ex.toString(), null);
-            return;
-        }
-        bluetoothDevices.put(device.getAddress(), new BtEntry(device, btSocket, writer, reader, startDeviceReadThread(name == null ? uuid : name, reader)));
+        final BluetoothDevice finalDevice = device;
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                BluetoothSocket btSocket;
+                try {
+                    btSocket = finalDevice.createRfcommSocketToServiceRecord(sppUuid);
+                } catch (IOException ex) {
+//                    result.error("CreateBtSocketException", "Failed to create RfComm socket: " + ex.toString(), null);
+                    return;
+                }
+                for (int i = 0; ; i++) {
+                    try {
+                        btSocket.connect();
+                    } catch (IOException ex) {
+                        if (i < 5) {
+                            Log.d("FlbtClassicSppPlugin", "Failed to connect. Retrying.");
+                            continue;
+                        }
+//                        result.error("ConnectException", "Failed to connect: " + ex.toString(), null);
+                        return;
+                    }
+                    break;
+                }
+
+                BufferedOutputStream writer;
+                InputStream reader;
+                try {
+                    writer = new BufferedOutputStream(btSocket.getOutputStream());
+                    reader = btSocket.getInputStream();
+                } catch (IOException ex) {
+//                    result.error("ConnectException", "Failed to get input / output stream: " + ex.toString(), null);
+                    return;
+                }
+                String identifier = name == null ? uuid : name;
+                BtEntry btEntry = new BtEntry(finalDevice, btSocket, writer, reader, identifier, startDeviceReadThread(identifier, reader));
+                bluetoothDevices.put(identifier, btEntry);
+                HashMap<String, Object> args = new HashMap<>();
+                args.put("identifier", identifier);
+                args.put("uuid", finalDevice.getAddress());
+                channel.invokeMethod("connected", args);
+            }
+        }).start();
+        result.success(null);
     }
 
     private BluetoothDevice findByName(String name) {
@@ -210,12 +225,18 @@ public class FlbtClassicSppPlugin implements MethodCallHandler, PluginRegistry.R
             permissions.add(Manifest.permission.ACCESS_FINE_LOCATION);
         }
         if (permissions.size() > 0) {
-            ActivityCompat.requestPermissions(registrar.activity(), (String[]) permissions.toArray(), 1);
+            ActivityCompat.requestPermissions(registrar.activity(), permissions.toArray(new String[0]), 1);
         }
     }
 
     @Override
-    public boolean onRequestPermissionsResult(int i, String[] strings, int[] ints) {
+    public boolean onRequestPermissionsResult(int code, String[] permissions, int[] grantResults) {
+        for (int i = 0; i < permissions.length; i++) {
+            int grantResult = grantResults[i];
+            if (grantResult != PackageManager.PERMISSION_GRANTED) {
+                return true;
+            }
+        }
         init(new Result() {
             @Override
             public void success(Object o) {
@@ -235,23 +256,27 @@ public class FlbtClassicSppPlugin implements MethodCallHandler, PluginRegistry.R
         return true;
     }
 
-    private Thread startDeviceReadThread(final String identifier, final InputStreamReader reader) {
-        return new Thread(new Runnable() {
+    private Thread startDeviceReadThread(final String identifier, final InputStream reader) {
+        Thread t = new Thread(new Runnable() {
             @Override
             public void run() {
                 ArrayList<Object> data = new ArrayList<>();
                 data.add(identifier);
                 data.add(null);
-                try {
-                    data.set(1, reader.read());
-                    if (eventSink != null) {
-                        eventSink.success(data);
+                while(true) {
+                    try {
+                        data.set(1, reader.read());
+                        if (eventSink != null) {
+                            eventSink.success(data);
+                        }
+                    } catch (IOException e) {
+                        channel.invokeMethod("disconnected", identifier);
                     }
-                } catch (IOException e) {
-                    channel.invokeMethod("disconnected", identifier);
                 }
             }
         });
+        t.start();
+        return t;
     }
 
     private EventChannel.EventSink eventSink;

@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'dart:async';
 
@@ -20,7 +22,13 @@ class _MyAppState extends State<MyApp> {
     super.initState();
     initPlatformState();
     flbt.init().then((_) {
-      print("success!");
+      flbt.connectByName("ISKRA_ISD").then((device) {
+        print(device);
+        device.onData = (data) {
+          print("data: $data");
+        };
+        flbt.writeBytes(device, Uint8List.fromList([0x02, 0x01, 0x04, 0x40, 0x84, 0x03]));
+      });
     });
   }
 
@@ -53,7 +61,7 @@ class _MyAppState extends State<MyApp> {
         ),
         body: new Column(children: [
           new Text('Running on: $_platformVersion\n'),
-          new Text('Initialized: ${flbt.init()}')
+          new Text('Initialized:}')
         ]),
       ),
     );
