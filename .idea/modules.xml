@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ProjectModuleManager">
+    <modules>
+      <module fileurl="file://$PROJECT_DIR$/flbt_classic_spp.iml" filepath="$PROJECT_DIR$/flbt_classic_spp.iml" />
+      <module fileurl="file://$PROJECT_DIR$/flbt_classic_spp_android.iml" filepath="$PROJECT_DIR$/flbt_classic_spp_android.iml" />
+    </modules>
+  </component>
+</project>
