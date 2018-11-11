@@ -19,7 +19,7 @@ class FlbtDevice {
   FlbtConnectionState get connState => _connState;
 
   set connState(FlbtConnectionState state) {
-    if (onConnStateChange != null) onConnStateChange(this);
+    if (state != _connState && onConnStateChange != null) onConnStateChange(this);
     _connState = state;
   }
 
@@ -42,12 +42,10 @@ class FlbtDevice {
 class FlbtClassicSpp {
   static const String _methodConnect = "connect";
 
-  static const MethodChannel _channel =
-  const MethodChannel('flbt_classic_spp');
+  static const MethodChannel _channel = const MethodChannel('flbt_classic_spp');
 
   static const dataStream =
-  const EventChannel("gm5.solutions.flbt_classic_spp_plugin/dataStream");
-
+      const EventChannel("gm5.solutions.flbt_classic_spp_plugin/dataStream");
 
   // instance
   FlbtClassicSpp._() {
@@ -61,8 +59,8 @@ class FlbtClassicSpp {
   // state
   Map<String, FlbtDevice> _devices = {};
   Map<String, Completer> _awaitingConnect = {};
+  Map<String, Completer> _awaitingWrite = {};
   Completer _awaitingInit;
-
 
   static Future<String> get platformVersion async {
     final String version = await _channel.invokeMethod('getPlatformVersion');
@@ -80,10 +78,18 @@ class FlbtClassicSpp {
   Future<bool> writeString(FlbtDevice device, String data) {
     return writeBytes(device, AsciiEncoder().convert(data));
   }
-  
+
   Future<bool> writeBytes(FlbtDevice device, Uint8List data) async {
-    final bool result = await _channel.invokeMethod("write", {'identifier': device.identifier, 'payload': data});
-    return result;
+    Completer<bool> completer = Completer();
+    _awaitingWrite[device.identifier] = completer;
+    await _channel.invokeMethod(
+        "write", {'identifier': device.identifier, 'payload': data});
+    final bool finish =
+        await completer.future.timeout(Duration(seconds: 10), onTimeout: () {
+      _awaitingWrite.remove(device.identifier);
+      return false;
+    });
+    return finish;
   }
 
   Future<FlbtDevice> connectByName(String name,
@@ -100,14 +106,13 @@ class FlbtClassicSpp {
     return await _connect(null, uuid, timeout);
   }
 
-  Future<FlbtDevice> _connect(String name, String uuid,
-      Duration timeout) async {
+  Future<FlbtDevice> _connect(
+      String name, String uuid, Duration timeout) async {
     Completer completer = Completer();
     _awaitingConnect[name ?? uuid] = completer;
-    await _channel.invokeMethod(_methodConnect,
-        {'name': name, 'uuid': uuid});
-    final FlbtDevice flbtDevice = await completer.future.timeout(
-        timeout, onTimeout: () {
+    await _channel.invokeMethod(_methodConnect, {'name': name, 'uuid': uuid});
+    final FlbtDevice flbtDevice =
+        await completer.future.timeout(timeout, onTimeout: () {
       _awaitingConnect.remove(name ?? uuid);
     });
     return flbtDevice;
@@ -118,7 +123,9 @@ class FlbtClassicSpp {
       case 'connected':
         String identifier = methodCall.arguments['identifier'];
         if (identifier == null) return null;
-        final Map<String, dynamic> args = (methodCall.arguments as Map<dynamic, dynamic>).cast<String, dynamic>();
+        final Map<String, dynamic> args =
+            (methodCall.arguments as Map<dynamic, dynamic>)
+                .cast<String, dynamic>();
         FlbtDevice device = FlbtDevice.fromMap(args);
         device.connState = FlbtConnectionState.connected;
         _devices[identifier] = device;
@@ -131,10 +138,25 @@ class FlbtClassicSpp {
         _awaitingInit.complete(true);
         return null;
       case 'disconnected':
-        String identifier = methodCall.arguments['identifier'];
+        String identifier = methodCall.arguments;
         if (identifier == null) return null;
         _devices[identifier]?.connState = FlbtConnectionState.disconnected;
+        Completer completer = _awaitingWrite[identifier];
+        if (completer == null) return null;
+        completer.complete(false);
+        _awaitingWrite.remove(identifier);
         return null;
+      case 'write_complete':
+        String identifier = methodCall.arguments;
+        if (identifier == null) return null;
+        Completer completer = _awaitingWrite[identifier];
+        if (completer == null) return null;
+        completer.complete(true);
+        _awaitingWrite.remove(identifier);
+        return null;
+      case 'write_failed':
+        return null;
+
       default:
       // todo - throw not implemented
     }

@@ -90,13 +90,7 @@ public class FlbtClassicSppPlugin implements MethodCallHandler, PluginRegistry.R
                 }
                 BtEntry btEntry = bluetoothDevices.get(identifier);
                 byte[] data = call.argument("payload");
-                try {
-                    btEntry.writer.write(data);
-                    btEntry.writer.flush();
-                } catch (IOException e) {
-                    result.error("WriteException", "Could not write data: " + e.toString(), null);
-                    break;
-                }
+                writeData(btEntry, data);
                 result.success(null);
                 break;
             default:
@@ -105,11 +99,44 @@ public class FlbtClassicSppPlugin implements MethodCallHandler, PluginRegistry.R
         }
     }
 
+    void writeData(final BtEntry btEntry, final byte[] data) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    btEntry.writer.write(data);
+                    btEntry.writer.flush();
+                    channel.invokeMethod("write_complete", btEntry.identifier);
+                } catch (IOException e) {
+                    Log.e("flbt_classic_spp", "Could not write data: " + e.toString());
+                    if (bluetoothDevices.containsKey(btEntry.identifier)) {
+                        bluetoothDevices.remove(btEntry.identifier);
+                    }
+                    channel.invokeMethod("disconnected", btEntry.identifier);
+                    channel.invokeMethod("write_failed", e.toString());
+                    return;
+                }
+            }
+        }).start();
+    }
+
     private void connectBt(final Result result, final String name, final String uuid) {
         if (bluetoothAdapter == null) {
             result.error("NoBluetoothAdapter", "Did you call init?", null);
             return;
         }
+
+        // check if already connected
+        String identifier = name == null ? uuid : name;
+        if (bluetoothDevices.containsKey(identifier)) {
+            HashMap<String, Object> args = new HashMap<>();
+            args.put("identifier", identifier);
+            args.put("uuid", bluetoothDevices.get(identifier).device.getAddress());
+            channel.invokeMethod("connected", args);
+            result.success(null);
+            return;
+        }
+
         BluetoothDevice device = null;
         if (name != null) {
             device = findByName(name);
@@ -134,7 +161,7 @@ public class FlbtClassicSppPlugin implements MethodCallHandler, PluginRegistry.R
 //                    result.error("CreateBtSocketException", "Failed to create RfComm socket: " + ex.toString(), null);
                     return;
                 }
-                for (int i = 0; ; i++) {
+                for (int i = 0;; i++) {
                     try {
                         btSocket.connect();
                     } catch (IOException ex) {
@@ -270,7 +297,11 @@ public class FlbtClassicSppPlugin implements MethodCallHandler, PluginRegistry.R
                             eventSink.success(data);
                         }
                     } catch (IOException e) {
+                        if (bluetoothDevices.containsKey(identifier)) {
+                            bluetoothDevices.remove(identifier);
+                        }
                         channel.invokeMethod("disconnected", identifier);
+                        return;
                     }
                 }
             }
